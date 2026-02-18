@@ -4,13 +4,33 @@ A Netflix-like video streaming platform with distributed systems architecture.
 
 ## Features
 
-- 🎬 Video upload (with multipart upload for large files)
-- 📺 Video streaming with pause/resume (HTTP Range support)
-- 🔍 Full-text search (Elasticsearch)
-- 📊 Real-time analytics with top K most watched videos
-- ⏱️ Timeframe support (hour, day, week, month, year, all-time)
+### Core Streaming
+- 🎬 Video upload (simple + S3-style multipart for large files)
+- 📺 Adaptive bitrate streaming (HLS with multiple quality levels)
+- 🎥 Progressive download streaming (HTTP Range support)
+- 🔄 Automatic video transcoding (FFmpeg to 1080p, 720p, 480p, 360p, 240p)
+- ⏯️ Resume playback from where you left off
 - 📺 TV show support (seasons/episodes)
 - 🎥 Movie support
+
+### Search & Discovery
+- 🔍 Full-text search with fuzzy matching (Elasticsearch)
+- 🔎 Search across title, description, and show titles
+- 🏷️ Filter by content type and genre
+
+### Analytics & Performance
+- 📊 Real-time top K analytics (Redis sorted sets)
+- ⏱️ Sliding time windows (hour, day, week, month, year, all-time)
+- 🚀 3-level fallback for reliability (Redis → Aggregates → Raw data)
+- 📈 Pre-aggregated statistics (hourly/daily)
+- ⚡ Fast queries: O(log k) for top K, 1-2ms with caching
+
+### Watch History
+- 📝 Watch position tracking (auto-save every 10 seconds)
+- 🎯 Continue watching section
+- ✅ Completed videos tracking
+- 💾 Write-through cache (Redis + PostgreSQL)
+- 🔄 Background flush (batch updates every 30 seconds)
 
 ## Architecture
 
@@ -23,9 +43,12 @@ A Netflix-like video streaming platform with distributed systems architecture.
 - **FastAPI**: Backend API server
 
 ### Components
-1. **API Server**: FastAPI endpoints for upload, streaming, search, analytics
-2. **Kafka Consumer**: Processes video_viewed events
-3. **Leaderboard Scheduler**: Refreshes top K leaderboards every 5 minutes
+1. **API Server**: FastAPI endpoints for upload, streaming, search, analytics, watch position
+2. **Kafka Consumer**: Processes video_viewed events with idempotency
+3. **Leaderboard Scheduler**: Refreshes top K leaderboards every 5 minutes (atomic RENAME)
+4. **Aggregation Scheduler**: Pre-aggregates hourly and daily statistics
+5. **Transcoding Worker**: Converts videos to multiple resolutions using FFmpeg
+6. **Watch Position Flusher**: Batches position updates from Redis to PostgreSQL every 30s
 
 ## Quick Start
 
@@ -187,12 +210,38 @@ Returns:
 4. API publishes `video_uploaded` event to Kafka
 5. API indexes video in Elasticsearch
 
+### Video Transcoding Flow
+1. Video uploaded to MinIO
+2. Transcoding job created (status: PENDING)
+3. Transcoding worker picks up job
+4. FFmpeg transcodes to multiple resolutions in parallel
+5. Each quality generates HLS playlist (.m3u8) and segments (.ts)
+6. Segments stored in MinIO: `videos/{id}/hls/{quality}/`
+7. Job status updated to COMPLETED
+8. VideoVariant records created for each quality
+
 ### Video Streaming Flow
-1. Client requests video stream
-2. API fetches video from MinIO
-3. API records view in Redis (sorted set with timestamp)
-4. API publishes `video_viewed` event to Kafka
-5. API streams video to client
+1. Client requests HLS master playlist
+2. API returns master.m3u8 with all quality options
+3. Video.js player selects quality based on bandwidth
+4. Client requests quality-specific playlist
+5. Client downloads video segments (.ts files)
+6. API records view in Redis and publishes `video_viewed` event to Kafka
+7. Player automatically switches quality based on network conditions
+
+### Watch Position Flow
+1. **Save**: User watching video
+   - Auto-save every 10 seconds to Redis (1-2ms)
+   - Position added to flush queue
+   - Return success immediately
+2. **Background Flush**: Every 30 seconds
+   - Read up to 1000 positions from Redis queue
+   - Batch UPSERT to PostgreSQL (single transaction)
+   - Clear dirty flags and remove from queue
+3. **Resume**: User returns to video
+   - Check Redis first (cache hit: 1-2ms)
+   - Fallback to PostgreSQL if not in Redis (10-20ms)
+   - Show "Continue Watching" banner if position > 30s
 
 ### Analytics Flow
 1. Kafka consumer processes `video_viewed` events
@@ -355,19 +404,35 @@ EntertainmentTime/
 └── frontend_multipart_example.html  # Example frontend
 ```
 
+## Already Implemented ✅
+
+- ✅ **PostgreSQL fallback for analytics** - 3-level fallback (Redis → Pre-aggregated tables → Raw views)
+- ✅ **Views table** - Complete historical analytics with VideoStatsHourly and VideoStatsDaily
+- ✅ **Video transcoding** - FFmpeg transcoding to multiple resolutions (1080p, 720p, 480p, 360p, 240p)
+- ✅ **Adaptive bitrate streaming** - HLS with automatic quality switching
+- ✅ **Watch position tracking** - Redis write-through cache with background flush to PostgreSQL
+- ✅ **Resume playback** - Continue watching from where user left off
+- ✅ **Watch history** - Continue watching + Completed videos
+- ✅ **Background workers** - Transcoding, flushing, aggregation, leaderboard refresh
+- ✅ **Idempotent event processing** - Event IDs prevent duplicate processing
+- ✅ **Atomic operations** - RENAME for race-condition-free leaderboard updates
+
 ## Future Enhancements
 
-- [ ] Add PostgreSQL fallback for analytics when Redis is down
-- [ ] Add Views table for accurate historical analytics
 - [ ] Implement user authentication (JWT)
-- [ ] Add video transcoding for multiple resolutions
-- [ ] Add thumbnail generation
-- [ ] Build proper frontend (React/Vue)
-- [ ] Add rate limiting
-- [ ] Add video recommendations
+- [ ] Add thumbnail generation from videos
+- [ ] Build proper frontend (React/Vue/Next.js)
+- [ ] Add rate limiting (per user/IP)
+- [ ] Add video recommendations (ML-based)
 - [ ] Add user watchlist/favorites
 - [ ] Add content moderation
-- [ ] Add CDN integration
+- [ ] Add CDN integration (CloudFront/CloudFlare)
+- [ ] Add home screen with featured/trending content
+- [ ] Add TV shows catalog organization
+- [ ] Add browse by genre endpoints
+- [ ] Add user profiles
+- [ ] Add comments/reviews
+- [ ] Add subtitles/closed captions support
 
 ## License
 
