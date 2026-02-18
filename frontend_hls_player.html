@@ -1,0 +1,228 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Adaptive Streaming Player</title>
+
+    <!-- Video.js CSS -->
+    <link href="https://vjs.zencdn.net/8.6.1/video-js.css" rel="stylesheet">
+
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 1200px;
+            margin: 50px auto;
+            padding: 20px;
+            background: #1a1a1a;
+            color: #fff;
+        }
+        h1 {
+            text-align: center;
+            color: #e50914;
+        }
+        .player-container {
+            background: #000;
+            border-radius: 10px;
+            overflow: hidden;
+            box-shadow: 0 4px 20px rgba(0,0,0,0.5);
+        }
+        .video-js {
+            width: 100%;
+            height: 600px;
+        }
+        .info-panel {
+            margin-top: 20px;
+            padding: 20px;
+            background: #2a2a2a;
+            border-radius: 10px;
+        }
+        .stat {
+            display: flex;
+            justify-content: space-between;
+            padding: 10px 0;
+            border-bottom: 1px solid #444;
+        }
+        .stat:last-child {
+            border-bottom: none;
+        }
+        .label {
+            font-weight: bold;
+            color: #999;
+        }
+        .value {
+            color: #e50914;
+            font-weight: bold;
+        }
+        .quality-badge {
+            display: inline-block;
+            padding: 4px 12px;
+            background: #e50914;
+            border-radius: 4px;
+            font-size: 12px;
+            font-weight: bold;
+        }
+    </style>
+</head>
+<body>
+    <h1>🎬 Adaptive Bitrate Streaming Demo</h1>
+    <p style="text-align: center; color: #999;">
+        Automatically switches quality based on your bandwidth
+    </p>
+
+    <div class="player-container">
+        <video
+            id="my-player"
+            class="video-js vjs-default-skin"
+            controls
+            preload="auto"
+            data-setup='{}'>
+        </video>
+    </div>
+
+    <div class="info-panel">
+        <h3>📊 Streaming Statistics</h3>
+        <div class="stat">
+            <span class="label">Current Quality:</span>
+            <span class="value" id="current-quality">
+                <span class="quality-badge">Loading...</span>
+            </span>
+        </div>
+        <div class="stat">
+            <span class="label">Resolution:</span>
+            <span class="value" id="resolution">-</span>
+        </div>
+        <div class="stat">
+            <span class="label">Bitrate:</span>
+            <span class="value" id="bitrate">-</span>
+        </div>
+        <div class="stat">
+            <span class="label">Buffer Health:</span>
+            <span class="value" id="buffer">-</span>
+        </div>
+        <div class="stat">
+            <span class="label">Network Speed:</span>
+            <span class="value" id="bandwidth">-</span>
+        </div>
+    </div>
+
+    <!-- Video.js JavaScript -->
+    <script src="https://vjs.zencdn.net/8.6.1/video.min.js"></script>
+
+    <!-- Video.js HLS plugin -->
+    <script src="https://cdn.jsdelivr.net/npm/@videojs/http-streaming@3.5.3/dist/videojs-http-streaming.min.js"></script>
+
+    <script>
+        // Configuration
+        const API_BASE = 'http://localhost:8000/api';
+        const VIDEO_ID = 1;  // Change this to your video ID
+
+        // Initialize player
+        const player = videojs('my-player', {
+            fluid: true,
+            controls: true,
+            autoplay: false,
+            preload: 'auto',
+            html5: {
+                vhs: {
+                    overrideNative: true
+                },
+                nativeVideoTracks: false,
+                nativeAudioTracks: false,
+                nativeTextTracks: false
+            }
+        });
+
+        // Load HLS stream
+        const hlsUrl = `${API_BASE}/videos/${VIDEO_ID}/hls/master.m3u8`;
+        console.log('Loading HLS stream:', hlsUrl);
+
+        player.src({
+            src: hlsUrl,
+            type: 'application/x-mpegURL'
+        });
+
+        // Track quality changes
+        player.on('loadedmetadata', function() {
+            console.log('Video metadata loaded');
+            updateQualityDisplay();
+        });
+
+        // Update stats periodically
+        setInterval(updateStats, 1000);
+
+        function updateStats() {
+            const tech = player.tech({ IWillNotUseThisInPlugins: true });
+            const vhs = tech.vhs;
+
+            if (!vhs) return;
+
+            // Current quality
+            const currentPlaylist = vhs.playlists.media();
+            if (currentPlaylist) {
+                const resolution = currentPlaylist.attributes?.RESOLUTION;
+                const bandwidth = currentPlaylist.attributes?.BANDWIDTH;
+
+                if (resolution) {
+                    const quality = getQualityLabel(resolution.width);
+                    document.getElementById('current-quality').innerHTML = 
+                        `<span class="quality-badge">${quality}</span>`;
+                    document.getElementById('resolution').textContent = 
+                        `${resolution.width}x${resolution.height}`;
+                }
+
+                if (bandwidth) {
+                    document.getElementById('bitrate').textContent = 
+                        `${(bandwidth / 1000000).toFixed(2)} Mbps`;
+                }
+            }
+
+            // Buffer health
+            const buffered = player.buffered();
+            if (buffered.length > 0) {
+                const bufferEnd = buffered.end(buffered.length - 1);
+                const currentTime = player.currentTime();
+                const bufferHealth = bufferEnd - currentTime;
+                document.getElementById('buffer').textContent = 
+                    `${bufferHealth.toFixed(1)}s`;
+            }
+
+            // Network bandwidth estimate
+            if (vhs.bandwidth) {
+                document.getElementById('bandwidth').textContent = 
+                    `${(vhs.bandwidth / 1000000).toFixed(2)} Mbps`;
+            }
+        }
+
+        function updateQualityDisplay() {
+            const tech = player.tech({ IWillNotUseThisInPlugins: true });
+            const vhs = tech.vhs;
+
+            if (!vhs) return;
+
+            console.log('Available qualities:', vhs.playlists.playlists_);
+        }
+
+        function getQualityLabel(width) {
+            if (width >= 1920) return '1080p (Full HD)';
+            if (width >= 1280) return '720p (HD)';
+            if (width >= 854) return '480p (SD)';
+            if (width >= 640) return '360p';
+            return '240p';
+        }
+
+        // Error handling
+        player.on('error', function(e) {
+            const error = player.error();
+            console.error('Player error:', error);
+            alert('Playback error: ' + error.message);
+        });
+
+        // Log events for debugging
+        player.on('play', () => console.log('▶️  Playing'));
+        player.on('pause', () => console.log('⏸️  Paused'));
+        player.on('waiting', () => console.log('⏳ Buffering...'));
+        player.on('playing', () => console.log('✅ Playing'));
+    </script>
+</body>
+</html>

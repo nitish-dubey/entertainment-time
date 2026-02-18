@@ -1,0 +1,366 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Resume Playback Demo</title>
+
+    <!-- Video.js CSS -->
+    <link href="https://vjs.zencdn.net/8.6.1/video-js.css" rel="stylesheet">
+
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 1200px;
+            margin: 50px auto;
+            padding: 20px;
+            background: #141414;
+            color: #fff;
+        }
+        h1 {
+            text-align: center;
+            color: #e50914;
+        }
+        .resume-banner {
+            background: linear-gradient(90deg, #e50914, #b20710);
+            padding: 15px 20px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+            display: none;
+            align-items: center;
+            justify-content: space-between;
+        }
+        .resume-banner.show {
+            display: flex;
+        }
+        .resume-text {
+            flex: 1;
+        }
+        .resume-text h3 {
+            margin: 0 0 5px 0;
+            font-size: 18px;
+        }
+        .resume-text p {
+            margin: 0;
+            color: #ddd;
+            font-size: 14px;
+        }
+        .resume-buttons {
+            display: flex;
+            gap: 10px;
+        }
+        button {
+            background: #fff;
+            color: #000;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-weight: bold;
+        }
+        button:hover {
+            background: #ddd;
+        }
+        button.secondary {
+            background: transparent;
+            color: #fff;
+            border: 1px solid #fff;
+        }
+        .player-container {
+            background: #000;
+            border-radius: 10px;
+            overflow: hidden;
+            box-shadow: 0 4px 20px rgba(0,0,0,0.5);
+        }
+        .video-js {
+            width: 100%;
+            height: 600px;
+        }
+        .status-panel {
+            margin-top: 20px;
+            padding: 20px;
+            background: #2a2a2a;
+            border-radius: 10px;
+        }
+        .status-item {
+            display: flex;
+            justify-content: space-between;
+            padding: 8px 0;
+            border-bottom: 1px solid #444;
+        }
+        .status-item:last-child {
+            border-bottom: none;
+        }
+        .label {
+            color: #999;
+        }
+        .value {
+            color: #e50914;
+            font-weight: bold;
+        }
+        .progress-bar {
+            width: 100%;
+            height: 6px;
+            background: #444;
+            border-radius: 3px;
+            overflow: hidden;
+            margin: 5px 0;
+        }
+        .progress-fill {
+            height: 100%;
+            background: #e50914;
+            transition: width 0.3s;
+        }
+    </style>
+</head>
+<body>
+    <h1>🎬 Resume Playback Demo</h1>
+    <p style="text-align: center; color: #999;">
+        Watch position auto-saves every 10 seconds
+    </p>
+
+    <!-- Resume Banner -->
+    <div class="resume-banner" id="resumeBanner">
+        <div class="resume-text">
+            <h3>📌 Continue Watching</h3>
+            <p>Resume from <span id="resumeTime">0:00</span> (<span id="resumePercent">0%</span> watched)</p>
+        </div>
+        <div class="resume-buttons">
+            <button onclick="resumePlayback()">Resume</button>
+            <button class="secondary" onclick="startFromBeginning()">Start Over</button>
+        </div>
+    </div>
+
+    <div class="player-container">
+        <video
+            id="my-player"
+            class="video-js vjs-default-skin"
+            controls
+            preload="auto"
+            data-setup='{}'>
+        </video>
+    </div>
+
+    <div class="status-panel">
+        <h3>📊 Playback Status</h3>
+        <div class="status-item">
+            <span class="label">Current Position:</span>
+            <span class="value" id="currentPosition">0:00 / 0:00</span>
+        </div>
+        <div class="status-item">
+            <span class="label">Progress:</span>
+            <div style="flex: 1; margin-left: 20px;">
+                <div class="progress-bar">
+                    <div class="progress-fill" id="progressBar" style="width: 0%"></div>
+                </div>
+                <span class="value" id="progressPercent">0%</span>
+            </div>
+        </div>
+        <div class="status-item">
+            <span class="label">Auto-Save:</span>
+            <span class="value" id="autoSaveStatus">Ready</span>
+        </div>
+        <div class="status-item">
+            <span class="label">Last Saved:</span>
+            <span class="value" id="lastSaved">Never</span>
+        </div>
+    </div>
+
+    <!-- Video.js JavaScript -->
+    <script src="https://vjs.zencdn.net/8.6.1/video.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@videojs/http-streaming@3.5.3/dist/videojs-http-streaming.min.js"></script>
+
+    <script>
+        // Configuration
+        const API_BASE = 'http://localhost:8000/api';
+        const VIDEO_ID = 1;  // Change this
+        const USER_ID = 'user_123';  // In production, get from auth token
+        const AUTO_SAVE_INTERVAL = 10000;  // Save every 10 seconds
+
+        let savedPosition = null;
+        let autoSaveTimer = null;
+
+        // Initialize player
+        const player = videojs('my-player', {
+            fluid: true,
+            controls: true,
+            autoplay: false,
+            preload: 'auto'
+        });
+
+        // Load HLS stream
+        const hlsUrl = `${API_BASE}/videos/${VIDEO_ID}/hls/master.m3u8`;
+        player.src({
+            src: hlsUrl,
+            type: 'application/x-mpegURL'
+        });
+
+        // On player ready, check for saved position
+        player.ready(function() {
+            checkSavedPosition();
+        });
+
+        // Check if user has saved position
+        async function checkSavedPosition() {
+            try {
+                const response = await fetch(
+                    `${API_BASE}/videos/${VIDEO_ID}/position?user_id=${USER_ID}`
+                );
+
+                if (response.ok) {
+                    savedPosition = await response.json();
+
+                    // Show resume banner if not at beginning and not completed
+                    if (savedPosition.position_seconds > 30 && !savedPosition.completed) {
+                        showResumeBanner(savedPosition);
+                    } else {
+                        // Auto-resume if very close to where they left off
+                        if (savedPosition.position_seconds > 30) {
+                            player.currentTime(savedPosition.position_seconds);
+                        }
+                    }
+                } else {
+                    console.log('No saved position found');
+                }
+            } catch (error) {
+                console.error('Error checking saved position:', error);
+            }
+        }
+
+        // Show resume banner
+        function showResumeBanner(position) {
+            const banner = document.getElementById('resumeBanner');
+            const timeElem = document.getElementById('resumeTime');
+            const percentElem = document.getElementById('resumePercent');
+
+            timeElem.textContent = formatTime(position.position_seconds);
+            percentElem.textContent = position.progress_percent.toFixed(1);
+
+            banner.classList.add('show');
+        }
+
+        // Resume from saved position
+        function resumePlayback() {
+            if (savedPosition) {
+                player.currentTime(savedPosition.position_seconds);
+                player.play();
+            }
+            document.getElementById('resumeBanner').classList.remove('show');
+        }
+
+        // Start from beginning
+        function startFromBeginning() {
+            player.currentTime(0);
+            player.play();
+            document.getElementById('resumeBanner').classList.remove('show');
+        }
+
+        // Auto-save position every 10 seconds
+        player.on('play', function() {
+            startAutoSave();
+        });
+
+        player.on('pause', function() {
+            stopAutoSave();
+            savePosition();  // Save immediately on pause
+        });
+
+        player.on('ended', function() {
+            stopAutoSave();
+            markComplete();
+        });
+
+        function startAutoSave() {
+            stopAutoSave();  // Clear existing timer
+
+            autoSaveTimer = setInterval(async () => {
+                await savePosition();
+            }, AUTO_SAVE_INTERVAL);
+        }
+
+        function stopAutoSave() {
+            if (autoSaveTimer) {
+                clearInterval(autoSaveTimer);
+                autoSaveTimer = null;
+            }
+        }
+
+        // Save current position
+        async function savePosition() {
+            const position = Math.floor(player.currentTime());
+            const duration = Math.floor(player.duration());
+
+            if (!position || !duration) return;
+
+            try {
+                document.getElementById('autoSaveStatus').textContent = 'Saving...';
+
+                const response = await fetch(
+                    `${API_BASE}/videos/${VIDEO_ID}/position?user_id=${USER_ID}`,
+                    {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify({
+                            position_seconds: position,
+                            duration_seconds: duration
+                        })
+                    }
+                );
+
+                if (response.ok) {
+                    const data = await response.json();
+                    document.getElementById('autoSaveStatus').textContent = '✓ Saved';
+                    document.getElementById('lastSaved').textContent = new Date().toLocaleTimeString();
+
+                    setTimeout(() => {
+                        document.getElementById('autoSaveStatus').textContent = 'Ready';
+                    }, 2000);
+                }
+            } catch (error) {
+                console.error('Error saving position:', error);
+                document.getElementById('autoSaveStatus').textContent = '✗ Failed';
+            }
+        }
+
+        // Mark video as completed
+        async function markComplete() {
+            try {
+                await fetch(
+                    `${API_BASE}/videos/${VIDEO_ID}/mark-complete?user_id=${USER_ID}`,
+                    {method: 'POST'}
+                );
+                console.log('✓ Marked as completed');
+            } catch (error) {
+                console.error('Error marking complete:', error);
+            }
+        }
+
+        // Update status display
+        player.on('timeupdate', function() {
+            const current = player.currentTime();
+            const duration = player.duration();
+
+            if (duration) {
+                const percent = (current / duration) * 100;
+
+                document.getElementById('currentPosition').textContent = 
+                    `${formatTime(current)} / ${formatTime(duration)}`;
+                document.getElementById('progressBar').style.width = `${percent}%`;
+                document.getElementById('progressPercent').textContent = `${percent.toFixed(1)}%`;
+            }
+        });
+
+        // Format seconds to MM:SS
+        function formatTime(seconds) {
+            const mins = Math.floor(seconds / 60);
+            const secs = Math.floor(seconds % 60);
+            return `${mins}:${secs.toString().padStart(2, '0')}`;
+        }
+
+        // Cleanup on page unload
+        window.addEventListener('beforeunload', () => {
+            savePosition();
+        });
+    </script>
+</body>
+</html>

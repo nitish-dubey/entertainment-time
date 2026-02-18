@@ -1,0 +1,315 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Multipart Video Upload with Resume</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 50px auto;
+            padding: 20px;
+        }
+        .upload-container {
+            border: 2px dashed #ccc;
+            padding: 30px;
+            text-align: center;
+            border-radius: 10px;
+        }
+        .progress-container {
+            margin: 20px 0;
+            display: none;
+        }
+        .progress-bar {
+            width: 100%;
+            height: 30px;
+            background: #f0f0f0;
+            border-radius: 15px;
+            overflow: hidden;
+        }
+        .progress-fill {
+            height: 100%;
+            background: linear-gradient(90deg, #4CAF50, #45a049);
+            width: 0%;
+            transition: width 0.3s;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: white;
+            font-weight: bold;
+        }
+        .status {
+            margin: 10px 0;
+            color: #666;
+        }
+        button {
+            background: #4CAF50;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 16px;
+            margin: 5px;
+        }
+        button:hover {
+            background: #45a049;
+        }
+        button:disabled {
+            background: #ccc;
+            cursor: not-allowed;
+        }
+        .error {
+            color: red;
+            margin: 10px 0;
+        }
+        .success {
+            color: green;
+            margin: 10px 0;
+        }
+    </style>
+</head>
+<body>
+    <h1>🎬 Multipart Video Upload with Resume</h1>
+    <p>This demonstrates S3-style multipart upload with resume capability!</p>
+
+    <div class="upload-container">
+        <input type="file" id="videoFile" accept="video/*">
+        <br><br>
+        <input type="text" id="videoTitle" placeholder="Video Title" style="width: 300px; padding: 8px;">
+        <br><br>
+        <button id="uploadBtn" onclick="startUpload()">Upload Video</button>
+        <button id="pauseBtn" onclick="pauseUpload()" style="display:none;">Pause</button>
+        <button id="resumeBtn" onclick="resumeUpload()" style="display:none;">Resume</button>
+    </div>
+
+    <div class="progress-container" id="progressContainer">
+        <div class="progress-bar">
+            <div class="progress-fill" id="progressFill">0%</div>
+        </div>
+        <div class="status" id="status"></div>
+        <div id="error" class="error"></div>
+        <div id="success" class="success"></div>
+    </div>
+
+    <script>
+        const API_BASE = 'http://localhost:8000/api/multipart';
+
+        let uploadState = {
+            file: null,
+            uploadId: null,
+            filePath: null,
+            partSize: 5 * 1024 * 1024, // 5MB
+            totalParts: 0,
+            uploadedParts: [],
+            currentPart: 0,
+            isPaused: false
+        };
+
+        async function startUpload() {
+            const fileInput = document.getElementById('videoFile');
+            const titleInput = document.getElementById('videoTitle');
+
+            if (!fileInput.files[0]) {
+                alert('Please select a video file');
+                return;
+            }
+
+            if (!titleInput.value) {
+                alert('Please enter a video title');
+                return;
+            }
+
+            uploadState.file = fileInput.files[0];
+            document.getElementById('progressContainer').style.display = 'block';
+            document.getElementById('uploadBtn').disabled = true;
+            document.getElementById('error').textContent = '';
+            document.getElementById('success').textContent = '';
+
+            try {
+                // Step 1: Initiate multipart upload
+                updateStatus('Initializing upload...');
+                const initData = await initiateUpload(uploadState.file, titleInput.value);
+
+                uploadState.uploadId = initData.upload_id;
+                uploadState.filePath = initData.file_path;
+                uploadState.partSize = initData.part_size;
+                uploadState.totalParts = initData.total_parts;
+                uploadState.metadata = initData.metadata;
+
+                console.log('Upload initiated:', initData);
+
+                // Step 2: Upload parts
+                document.getElementById('pauseBtn').style.display = 'inline-block';
+                await uploadParts();
+
+            } catch (error) {
+                showError('Upload failed: ' + error.message);
+                console.error(error);
+                document.getElementById('uploadBtn').disabled = false;
+            }
+        }
+
+        async function initiateUpload(file, title) {
+            const formData = new FormData();
+            formData.append('filename', file.name);
+            formData.append('file_size', file.size);
+            formData.append('content_type', 'movie');
+            formData.append('title', title);
+            formData.append('description', 'Uploaded via multipart upload');
+
+            const response = await fetch(`${API_BASE}/initiate`, {
+                method: 'POST',
+                body: formData
+            });
+
+            if (!response.ok) {
+                throw new Error('Failed to initiate upload');
+            }
+
+            return await response.json();
+        }
+
+        async function uploadParts() {
+            const { file, partSize, totalParts, uploadId, filePath } = uploadState;
+
+            for (let partNumber = uploadState.currentPart + 1; partNumber <= totalParts; partNumber++) {
+                if (uploadState.isPaused) {
+                    updateStatus(`Paused at part ${partNumber} of ${totalParts}`);
+                    uploadState.currentPart = partNumber - 1;
+                    return;
+                }
+
+                // Calculate byte range for this part
+                const start = (partNumber - 1) * partSize;
+                const end = Math.min(start + partSize, file.size);
+                const chunk = file.slice(start, end);
+
+                updateStatus(`Uploading part ${partNumber} of ${totalParts}...`);
+
+                try {
+                    // Upload part with retry logic
+                    const partData = await uploadPart(chunk, partNumber, uploadId, filePath);
+                    uploadState.uploadedParts.push(partData);
+
+                    // Update progress
+                    const progress = (partNumber / totalParts) * 100;
+                    updateProgress(progress);
+
+                } catch (error) {
+                    // Retry failed part
+                    console.error(`Part ${partNumber} failed, retrying...`, error);
+                    partNumber--; // Retry same part
+                    await sleep(1000); // Wait 1 second before retry
+                }
+            }
+
+            // Step 3: Complete upload
+            await completeUpload();
+        }
+
+        async function uploadPart(chunk, partNumber, uploadId, filePath) {
+            const formData = new FormData();
+            formData.append('upload_id', uploadId);
+            formData.append('file_path', filePath);
+            formData.append('part_number', partNumber);
+            formData.append('part', chunk);
+
+            const response = await fetch(`${API_BASE}/part`, {
+                method: 'POST',
+                body: formData
+            });
+
+            if (!response.ok) {
+                throw new Error(`Failed to upload part ${partNumber}`);
+            }
+
+            return await response.json();
+        }
+
+        async function completeUpload() {
+            updateStatus('Completing upload...');
+
+            const { uploadId, filePath, uploadedParts, file, metadata } = uploadState;
+
+            const formData = new FormData();
+            formData.append('upload_id', uploadId);
+            formData.append('file_path', filePath);
+            formData.append('parts', JSON.stringify(uploadedParts));
+            formData.append('filename', file.name);
+            formData.append('file_size', file.size);
+
+            // Add metadata
+            formData.append('content_type', metadata.content_type);
+            formData.append('title', metadata.title);
+            formData.append('description', metadata.description || '');
+
+            const response = await fetch(`${API_BASE}/complete`, {
+                method: 'POST',
+                body: formData
+            });
+
+            if (!response.ok) {
+                throw new Error('Failed to complete upload');
+            }
+
+            const video = await response.json();
+            console.log('Upload complete:', video);
+
+            updateProgress(100);
+            showSuccess(`✅ Upload complete! Video ID: ${video.id}`);
+            document.getElementById('pauseBtn').style.display = 'none';
+        }
+
+        function pauseUpload() {
+            uploadState.isPaused = true;
+            document.getElementById('pauseBtn').style.display = 'none';
+            document.getElementById('resumeBtn').style.display = 'inline-block';
+        }
+
+        async function resumeUpload() {
+            uploadState.isPaused = false;
+            document.getElementById('pauseBtn').style.display = 'inline-block';
+            document.getElementById('resumeBtn').style.display = 'none';
+
+            // Check which parts are already uploaded (for resume after page refresh)
+            try {
+                const response = await fetch(
+                    `${API_BASE}/list-parts?upload_id=${uploadState.uploadId}&file_path=${uploadState.filePath}`
+                );
+                const data = await response.json();
+                uploadState.uploadedParts = data.uploaded_parts;
+                uploadState.currentPart = data.uploaded_parts.length;
+                console.log('Resuming from part:', uploadState.currentPart + 1);
+            } catch (error) {
+                console.error('Could not fetch uploaded parts:', error);
+            }
+
+            await uploadParts();
+        }
+
+        function updateProgress(percent) {
+            const fill = document.getElementById('progressFill');
+            fill.style.width = percent + '%';
+            fill.textContent = Math.round(percent) + '%';
+        }
+
+        function updateStatus(message) {
+            document.getElementById('status').textContent = message;
+        }
+
+        function showError(message) {
+            document.getElementById('error').textContent = message;
+        }
+
+        function showSuccess(message) {
+            document.getElementById('success').textContent = message;
+        }
+
+        function sleep(ms) {
+            return new Promise(resolve => setTimeout(resolve, ms));
+        }
+    </script>
+</body>
+</html>
